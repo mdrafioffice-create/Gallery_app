@@ -1,7 +1,7 @@
 name: gallery_app
 description: A simple phone gallery app (photos + videos, albums, zoom, share, delete).
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.4.0
@@ -12,6 +12,10 @@ dependencies:
   photo_manager: ^3.6.0
   video_player: ^2.9.2
   share_plus: ^10.1.4
+  just_audio: ^0.9.42
+  shared_preferences: ^2.3.2
+  path_provider: ^2.1.4
+  crypto: ^3.0.5
 
 flutter:
   uses-material-design: true
