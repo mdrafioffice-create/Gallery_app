@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -56,3 +59,11 @@ jobs:
         with:
           name: SkyHopper-v1.0-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Publish APK as a release (easy phone download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk SkyHopper.apk
+          gh release delete sky-hopper-latest -y --cleanup-tag --repo ${{ github.repository }} || true
+          gh release create sky-hopper-latest SkyHopper.apk --repo ${{ github.repository }} --target ${{ github.sha }} --title "Sky Hopper (latest)" --notes "Tap SkyHopper.apk below to download and install."
