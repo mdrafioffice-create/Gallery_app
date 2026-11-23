@@ -23,14 +23,14 @@ jobs:
           channel: stable
 
       - name: Create Android project files
-        run: flutter create --platforms=android --project-name sky_hopper --org com.mygames .
+        run: flutter create --platforms=android --project-name road_rush --org com.mygames .
 
       - name: Set app name and turn off release lint
         run: |
           python3 - <<'PY'
           import os
           p = "android/app/src/main/AndroidManifest.xml"
-          s = open(p).read().replace('android:label="sky_hopper"', 'android:label="Sky Hopper"')
+          s = open(p).read().replace('android:label="road_rush"', 'android:label="Road Rush"')
           open(p, "w").write(s)
           g = "android/app/build.gradle.kts"
           if os.path.exists(g):
@@ -57,13 +57,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SkyHopper-v1.0-apk
+          name: RoadRush-v1.0-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Publish APK as a release (easy phone download)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk SkyHopper.apk
-          gh release delete sky-hopper-latest -y --cleanup-tag --repo ${{ github.repository }} || true
-          gh release create sky-hopper-latest SkyHopper.apk --repo ${{ github.repository }} --target ${{ github.sha }} --title "Sky Hopper (latest)" --notes "Tap SkyHopper.apk below to download and install."
+          cp build/app/outputs/flutter-apk/app-release.apk RoadRush.apk
+          gh release delete car-racing-latest -y --cleanup-tag --repo ${{ github.repository }} || true
+          gh release create car-racing-latest RoadRush.apk --repo ${{ github.repository }} --target ${{ github.sha }} --title "Road Rush (latest)" --notes "Tap RoadRush.apk below to download and install."

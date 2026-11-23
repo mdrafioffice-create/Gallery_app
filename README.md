@@ -1,11 +1,10 @@
-# Sky Hopper – tap-to-fly Android game (Flutter)
+# Road Rush – top-down car racing game (Flutter)
 
-Tap to flap, fly through the gaps between the pipes, and beat your best score.
-The game gets faster and the gaps get smaller as your score goes up. Your best score is saved on the phone.
+Steer your red race car through traffic: tap the left or right side of the screen to change lanes.
+Grab coins for bonus points (+25 each). The road gets faster the longer you survive. Best score is saved on the phone.
 
 ## Get the APK
-Every push to this branch builds the game on GitHub:
-1. Open the **Actions** tab, then the latest **Build APK** run.
-2. Download **SkyHopper-v1.0-apk** under *Artifacts*, unzip it, and install `app-release.apk` on your phone.
+Every push to this branch builds the game on GitHub and publishes it here:
+https://github.com/mdrafioffice-create/Gallery_app/releases/tag/car-racing-latest
 
-It installs as a separate app, so your gallery app is not affected.
+Open that page in Chrome on your phone, tap **RoadRush.apk**, then install it.

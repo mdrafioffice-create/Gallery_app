@@ -9,16 +9,16 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-  runApp(const SkyHopperApp());
+  runApp(const RoadRushApp());
 }
 
-class SkyHopperApp extends StatelessWidget {
-  const SkyHopperApp({super.key});
+class RoadRushApp extends StatelessWidget {
+  const RoadRushApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return const MaterialApp(
-      title: 'Sky Hopper',
+      title: 'Road Rush',
       debugShowCheckedModeBanner: false,
       home: GamePage(),
     );
@@ -27,13 +27,29 @@ class SkyHopperApp extends StatelessWidget {
 
 enum Phase { ready, playing, over }
 
-class Pipe {
-  Pipe(this.x, this.gapCenter, this.gapSize);
-  double x;
-  final double gapCenter;
-  final double gapSize;
-  bool scored = false;
+class Car {
+  Car(this.lane, this.y, this.color);
+  final int lane;
+  double y;
+  final Color color;
 }
+
+class Coin {
+  Coin(this.lane, this.y);
+  final int lane;
+  double y;
+  bool taken = false;
+}
+
+const trafficColors = [
+  Color(0xFF1E88E5),
+  Color(0xFF8E24AA),
+  Color(0xFFFDD835),
+  Color(0xFF00ACC1),
+  Color(0xFFFB8C00),
+  Color(0xFFECEFF1),
+  Color(0xFF43A047),
+];
 
 class GamePage extends StatefulWidget {
   const GamePage({super.key});
@@ -50,30 +66,39 @@ class _GamePageState extends State<GamePage>
   Size size = Size.zero;
 
   Phase phase = Phase.ready;
-  double birdY = 0;
-  double vel = 0;
+  int lane = 1;
+  double playerX = -1;
+  double tilt = 0;
   double t = 0;
-  double groundOffset = 0;
+  double scroll = 0;
+  double runTime = 0;
+  double dist = 0;
+  double spawnTimer = 0;
+  double coinTimer = 0;
   double deadTimer = 0;
   double flash = 0;
-  final List<Pipe> pipes = [];
-  int score = 0;
+  double crashX = 0;
+  double crashY = 0;
+  int coins = 0;
   int best = 0;
   bool newBest = false;
+  final List<Car> cars = [];
+  final List<Coin> coinList = [];
+  final List<int> lastLanes = [];
 
-  // Everything is scaled to the screen so it plays the same on any phone.
   double get w => size.width;
   double get h => size.height;
-  double get groundH => h * 0.12;
-  double get playH => h - groundH;
-  double get birdX => w * 0.3;
-  double get birdR => h * 0.022;
-  double get pipeW => w * 0.18;
-  double get speed => w * (0.42 + min(score, 30) * 0.006);
-  double get gravity => h * 2.6;
-  double get flapV => -h * 0.78;
-  double get nextGap =>
-      playH * (score < 10 ? 0.27 : (score < 25 ? 0.245 : 0.22));
+  double get roadL => w * 0.12;
+  double get roadR => w * 0.88;
+  double get laneW => (roadR - roadL) / 3;
+  double laneX(int i) => roadL + laneW * (i + 0.5);
+  double get carW => laneW * 0.56;
+  double get carH => carW * 1.85;
+  double get playerY => h * 0.8;
+  double get speed =>
+      phase == Phase.playing ? h * (0.62 + min(runTime, 70) * 0.011) : h * 0.35;
+  int get score => (dist / h * 10).floor() + coins * 25;
+  int get kmh => (speed / h * 160).round();
 
   @override
   void initState() {
@@ -101,82 +126,91 @@ class _GamePageState extends State<GamePage>
   void _update(double dt) {
     t += dt;
     if (flash > 0) flash = max(0, flash - dt * 3);
-    if (phase != Phase.over) {
-      groundOffset = (groundOffset + speed * dt) % (w * 0.1);
-    }
-
-    if (phase == Phase.ready) {
-      birdY = playH * 0.45 + sin(t * 5) * h * 0.012;
-      vel = 0;
-      return;
-    }
-
-    vel += gravity * dt;
-    birdY += vel * dt;
+    if (playerX < 0) playerX = laneX(lane);
 
     if (phase == Phase.over) {
       deadTimer += dt;
-      if (birdY > playH - birdR) {
-        birdY = playH - birdR;
-        vel = 0;
-      }
       return;
     }
 
-    // Playing: move pipes, spawn new ones, score, and check hits.
-    for (final p in pipes) {
-      p.x -= speed * dt;
+    final sp = speed;
+    scroll += sp * dt;
+
+    // Smooth steering toward the chosen lane, with a little body tilt.
+    final dx = laneX(lane) - playerX;
+    playerX += dx * min(1.0, dt * 14);
+    tilt = (dx / laneW).clamp(-1.0, 1.0).toDouble() * 0.25;
+
+    if (phase == Phase.ready) return;
+
+    runTime += dt;
+    dist += sp * dt;
+
+    for (final c in cars) {
+      c.y += sp * 0.55 * dt; // traffic is slower than you, so you overtake it
     }
-    pipes.removeWhere((p) => p.x + pipeW < 0);
-    if (pipes.isEmpty || pipes.last.x < w * 0.38) {
-      final gap = nextGap;
-      final minC = playH * 0.12 + gap / 2;
-      final maxC = playH * 0.88 - gap / 2;
-      pipes.add(Pipe(w + 10, minC + _rng.nextDouble() * (maxC - minC), gap));
+    cars.removeWhere((c) => c.y > h + carH);
+    for (final c in coinList) {
+      c.y += sp * dt;
+    }
+    coinList.removeWhere((c) => c.taken || c.y > h + carW);
+
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      _spawnCar();
+      spawnTimer = max(0.42, 1.05 - runTime * 0.009);
+    }
+    coinTimer -= dt;
+    if (coinTimer <= 0) {
+      _spawnCoin();
+      coinTimer = 1.4 + _rng.nextDouble() * 1.2;
     }
 
-    for (final p in pipes) {
-      if (!p.scored && p.x + pipeW < birdX - birdR) {
-        p.scored = true;
-        score++;
-        HapticFeedback.selectionClick();
-      }
-    }
-
-    if (birdY - birdR < 0) {
-      birdY = birdR;
-      vel = 0;
-    }
-    if (birdY + birdR >= playH) {
-      birdY = playH - birdR;
-      _die();
-      return;
-    }
-    for (final p in pipes) {
-      final top = Rect.fromLTRB(p.x, -h, p.x + pipeW, p.gapCenter - p.gapSize / 2);
-      final bottom =
-          Rect.fromLTRB(p.x, p.gapCenter + p.gapSize / 2, p.x + pipeW, playH);
-      if (_hits(top) || _hits(bottom)) {
-        _die();
+    final me = Rect.fromCenter(
+        center: Offset(playerX, playerY), width: carW * 0.85, height: carH * 0.88);
+    for (final c in cars) {
+      final r = Rect.fromCenter(
+          center: Offset(laneX(c.lane), c.y), width: carW * 0.85, height: carH * 0.88);
+      if (me.overlaps(r)) {
+        _crash();
         return;
       }
     }
+    for (final c in coinList) {
+      final d = (Offset(laneX(c.lane), c.y) - Offset(playerX, playerY)).distance;
+      if (!c.taken && d < carW * 0.8) {
+        c.taken = true;
+        coins++;
+        HapticFeedback.selectionClick();
+      }
+    }
   }
 
-  bool _hits(Rect r) {
-    final nx = birdX.clamp(r.left, r.right).toDouble();
-    final ny = birdY.clamp(r.top, r.bottom).toDouble();
-    final dx = birdX - nx;
-    final dy = birdY - ny;
-    final rr = birdR * 0.85; // a little forgiving
-    return dx * dx + dy * dy < rr * rr;
+  void _spawnCar() {
+    int l = _rng.nextInt(3);
+    // Never let three cars in a row block all three lanes.
+    if (lastLanes.length >= 2 && lastLanes[0] != lastLanes[1]) {
+      l = lastLanes[_rng.nextInt(2)];
+    }
+    cars.add(Car(l, -carH, trafficColors[_rng.nextInt(trafficColors.length)]));
+    lastLanes.add(l);
+    if (lastLanes.length > 2) lastLanes.removeAt(0);
   }
 
-  void _die() {
+  void _spawnCoin() {
+    final free = [0, 1, 2]
+        .where((l) => !cars.any((c) => c.lane == l && c.y < carH * 2))
+        .toList();
+    if (free.isEmpty) return;
+    coinList.add(Coin(free[_rng.nextInt(free.length)], -carW));
+  }
+
+  void _crash() {
     phase = Phase.over;
     deadTimer = 0;
     flash = 1;
-    if (vel < 0) vel = 0;
+    crashX = playerX;
+    crashY = playerY - carH * 0.4;
     HapticFeedback.heavyImpact();
     newBest = score > best;
     if (newBest) {
@@ -185,18 +219,33 @@ class _GamePageState extends State<GamePage>
     }
   }
 
-  void _tap() {
+  void _resetRun() {
+    cars.clear();
+    coinList.clear();
+    lastLanes.clear();
+    runTime = 0;
+    dist = 0;
+    coins = 0;
+    spawnTimer = 0.8;
+    coinTimer = 1.5;
+  }
+
+  void _tap(double x) {
     if (phase == Phase.ready) {
+      _resetRun();
       phase = Phase.playing;
-      vel = flapV;
     } else if (phase == Phase.playing) {
-      vel = flapV;
-    } else if (deadTimer > 0.7) {
+      if (x < w / 2) {
+        lane = max(0, lane - 1);
+      } else {
+        lane = min(2, lane + 1);
+      }
+    } else if (deadTimer > 0.8) {
+      _resetRun();
       phase = Phase.ready;
-      pipes.clear();
-      score = 0;
+      lane = 1;
+      playerX = laneX(1);
       newBest = false;
-      vel = 0;
     }
   }
 
@@ -207,13 +256,10 @@ class _GamePageState extends State<GamePage>
       body: LayoutBuilder(
         builder: (context, constraints) {
           size = constraints.biggest;
-          return GestureDetector(
+          return Listener(
             behavior: HitTestBehavior.opaque,
-            onTapDown: (_) => _tap(),
-            child: CustomPaint(
-              size: size,
-              painter: GamePainter(this),
-            ),
+            onPointerDown: (e) => _tap(e.localPosition.dx),
+            child: CustomPaint(size: size, painter: GamePainter(this)),
           );
         },
       ),
@@ -227,118 +273,125 @@ class GamePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final w = g.w, h = g.h, playH = g.playH;
+    final w = g.w, h = g.h;
     if (w == 0) return;
 
-    // Sky
-    final sky = Rect.fromLTWH(0, 0, w, playH);
-    canvas.drawRect(
-      sky,
-      Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF4FC3F7), Color(0xFFB3E5FC)],
-        ).createShader(sky),
-    );
-
-    // Sun
-    canvas.drawCircle(Offset(w * 0.82, playH * 0.13), h * 0.045,
-        Paint()..color = const Color(0xFFFFF59D));
-
-    // Clouds drift slowly in the background
-    final cloud = Paint()..color = Colors.white.withOpacity(0.85);
-    for (int i = 0; i < 4; i++) {
-      final span = w * 1.5;
-      final x = ((i * w * 0.42) - g.t * w * 0.03) % span - w * 0.25;
-      final y = playH * (0.18 + 0.12 * (i % 3));
-      final s = h * (0.025 + 0.006 * (i % 2));
-      canvas.drawCircle(Offset(x, y), s, cloud);
-      canvas.drawCircle(Offset(x + s * 1.1, y - s * 0.5), s * 1.2, cloud);
-      canvas.drawCircle(Offset(x + s * 2.2, y), s, cloud);
-      canvas.drawRect(Rect.fromLTRB(x, y - s * 0.2, x + s * 2.2, y + s), cloud);
+    // Grass with moving stripes
+    canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = const Color(0xFF66BB6A));
+    final band = h * 0.1;
+    final grass2 = Paint()..color = const Color(0xFF5CAD60);
+    for (double y = -band * 2 + g.scroll % (band * 2); y < h; y += band * 2) {
+      canvas.drawRect(Rect.fromLTWH(0, y, w, band), grass2);
     }
 
-    // Pipes
-    final body = Paint()..color = const Color(0xFF43A047);
-    final shine = Paint()..color = const Color(0xFF66BB6A);
-    final edge = Paint()
-      ..color = const Color(0xFF2E7D32)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-    final capH = h * 0.03;
-    final capOut = g.pipeW * 0.08;
-    for (final p in g.pipes) {
-      final gapTop = p.gapCenter - p.gapSize / 2;
-      final gapBottom = p.gapCenter + p.gapSize / 2;
-      for (final r in [
-        Rect.fromLTRB(p.x, -4, p.x + g.pipeW, gapTop - capH),
-        Rect.fromLTRB(p.x, gapBottom + capH, p.x + g.pipeW, playH),
-      ]) {
-        canvas.drawRect(r, body);
-        canvas.drawRect(
-            Rect.fromLTWH(r.left + g.pipeW * 0.15, r.top, g.pipeW * 0.12, r.height),
-            shine);
-        canvas.drawRect(r, edge);
-      }
-      for (final r in [
-        Rect.fromLTRB(p.x - capOut, gapTop - capH, p.x + g.pipeW + capOut, gapTop),
-        Rect.fromLTRB(p.x - capOut, gapBottom, p.x + g.pipeW + capOut, gapBottom + capH),
-      ]) {
-        canvas.drawRect(r, body);
-        canvas.drawRect(r, edge);
+    // Trees along the roadside
+    for (int i = 0; i < 6; i++) {
+      final y = (i * h * 0.22 + g.scroll) % (h * 1.32) - h * 0.16;
+      final x = i.isEven ? w * 0.055 : w - w * 0.055;
+      canvas.drawCircle(Offset(x + 3, y + 4), w * 0.05, Paint()..color = Colors.black26);
+      canvas.drawCircle(Offset(x, y), w * 0.05, Paint()..color = const Color(0xFF2E7D32));
+      canvas.drawCircle(Offset(x - w * 0.012, y - w * 0.012), w * 0.03,
+          Paint()..color = const Color(0xFF43A047));
+    }
+
+    // Road
+    canvas.drawRect(Rect.fromLTRB(g.roadL, 0, g.roadR, h),
+        Paint()..color = const Color(0xFF455A64));
+
+    // Red and white curbs
+    final cl = h * 0.04;
+    final cw = w * 0.025;
+    int idx = 0;
+    for (double y = -cl * 2 + g.scroll % (cl * 2); y < h; y += cl, idx++) {
+      final p = Paint()
+        ..color = idx.isEven ? const Color(0xFFE53935) : Colors.white;
+      canvas.drawRect(Rect.fromLTWH(g.roadL - cw, y, cw, cl), p);
+      canvas.drawRect(Rect.fromLTWH(g.roadR, y, cw, cl), p);
+    }
+
+    // Lane dashes
+    final period = h * 0.12;
+    final dash = Paint()..color = Colors.white70;
+    for (int i = 1; i < 3; i++) {
+      final x = g.roadL + g.laneW * i;
+      for (double y = -period + g.scroll % period; y < h; y += period) {
+        canvas.drawRect(Rect.fromLTWH(x - w * 0.008, y, w * 0.016, h * 0.06), dash);
       }
     }
 
-    // Ground with scrolling stripes
-    canvas.drawRect(Rect.fromLTRB(0, playH, w, h),
-        Paint()..color = const Color(0xFFDEB887));
-    final stripe = Paint()..color = const Color(0xFFCFA673);
-    for (double x = -g.groundOffset; x < w; x += w * 0.1) {
-      canvas.drawRect(
-          Rect.fromLTWH(x, playH + g.groundH * 0.3, w * 0.05, g.groundH * 0.12),
-          stripe);
+    // Coins
+    for (final c in g.coinList) {
+      final o = Offset(g.laneX(c.lane), c.y);
+      final r = g.carW * 0.28;
+      canvas.drawCircle(o, r, Paint()..color = const Color(0xFFFFA000));
+      canvas.drawCircle(o, r * 0.78, Paint()..color = const Color(0xFFFFD54F));
+      canvas.drawCircle(o + Offset(-r * 0.25, -r * 0.25), r * 0.18,
+          Paint()..color = Colors.white70);
     }
-    canvas.drawRect(Rect.fromLTRB(0, playH, w, playH + g.groundH * 0.15),
-        Paint()..color = const Color(0xFF7CB342));
 
-    _drawBird(canvas);
+    // Traffic and the player's car
+    for (final c in g.cars) {
+      _car(canvas, Offset(g.laneX(c.lane), c.y), c.color, false);
+    }
+    _car(canvas, Offset(g.playerX, g.playerY), const Color(0xFFE53935), true);
 
-    // Text and screens
+    // Crash explosion
+    if (g.phase == Phase.over && g.deadTimer < 0.9) {
+      final k = g.deadTimer;
+      final a = max(0.0, 1 - k * 1.1);
+      final r = g.carW * (0.6 + min(k, 0.5) * 2.4);
+      final o = Offset(g.crashX, g.crashY);
+      canvas.drawCircle(o, r, Paint()..color = const Color(0xFFFF6F00).withOpacity(a * 0.8));
+      canvas.drawCircle(o, r * 0.6, Paint()..color = const Color(0xFFFFEB3B).withOpacity(a));
+    }
+
+    // HUD
+    if (g.phase != Phase.ready) {
+      _text(canvas, '${g.score}', h * 0.06, Offset(w / 2, h * 0.07));
+      final cy = h * 0.075;
+      canvas.drawCircle(Offset(w * 0.07, cy), h * 0.014, Paint()..color = const Color(0xFFFFA000));
+      canvas.drawCircle(Offset(w * 0.07, cy), h * 0.010, Paint()..color = const Color(0xFFFFD54F));
+      _text(canvas, '${g.coins}', h * 0.026, Offset(w * 0.07 + h * 0.035, cy), left: true);
+      _text(canvas, '${g.kmh} km/h', h * 0.022, Offset(w * 0.96, cy), right: true);
+    }
+
     if (g.phase == Phase.ready) {
-      _text(canvas, 'Sky Hopper', h * 0.065, Offset(w / 2, playH * 0.22));
-      _text(canvas, 'Tap to fly!', h * 0.032, Offset(w / 2, playH * 0.64));
+      canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.black26);
+      _text(canvas, 'Road Rush', h * 0.065, Offset(w / 2, h * 0.24));
+      _text(canvas, 'Tap left or right to steer', h * 0.024, Offset(w / 2, h * 0.32));
+      _text(canvas, 'Dodge traffic, grab coins', h * 0.024, Offset(w / 2, h * 0.36));
+      final pulse = 0.6 + 0.4 * sin(g.t * 4).abs();
+      _text(canvas, 'Tap to start', h * 0.034, Offset(w / 2, h * 0.56),
+          color: Colors.white.withOpacity(pulse));
       if (g.best > 0) {
-        _text(canvas, 'Best: ${g.best}', h * 0.026, Offset(w / 2, playH * 0.72));
+        _text(canvas, 'Best: ${g.best}', h * 0.026, Offset(w / 2, h * 0.63));
       }
-    } else {
-      _text(canvas, '${g.score}', h * 0.08, Offset(w / 2, h * 0.11));
     }
 
     if (g.phase == Phase.over) {
       final panel = RRect.fromRectAndRadius(
-        Rect.fromCenter(
-            center: Offset(w / 2, playH * 0.45), width: w * 0.75, height: h * 0.3),
+        Rect.fromCenter(center: Offset(w / 2, h * 0.42), width: w * 0.78, height: h * 0.34),
         const Radius.circular(24),
       );
       canvas.drawRRect(panel, Paint()..color = const Color(0xEEFFF8E1));
       canvas.drawRRect(
           panel,
           Paint()
-            ..color = const Color(0xFFF57F17)
+            ..color = const Color(0xFFE53935)
             ..style = PaintingStyle.stroke
             ..strokeWidth = 5);
       final c = panel.center;
-      _text(canvas, 'Game Over', h * 0.05, c + Offset(0, -h * 0.095),
-          color: const Color(0xFFE65100));
-      _text(canvas, 'Score: ${g.score}', h * 0.032, c + Offset(0, -h * 0.025),
+      _text(canvas, 'Crash!', h * 0.055, c + Offset(0, -h * 0.11), color: const Color(0xFFD32F2F));
+      _text(canvas, 'Score: ${g.score}', h * 0.032, c + Offset(0, -h * 0.04),
           color: const Color(0xFF5D4037), shadow: false);
+      _text(canvas, 'Coins: ${g.coins}', h * 0.024, c + Offset(0, h * 0.008),
+          color: const Color(0xFFFF8F00), shadow: false);
       _text(canvas, g.newBest ? 'New best!' : 'Best: ${g.best}', h * 0.028,
-          c + Offset(0, h * 0.03),
+          c + Offset(0, h * 0.052),
           color: g.newBest ? const Color(0xFF2E7D32) : const Color(0xFF5D4037),
           shadow: false);
-      if (g.deadTimer > 0.7) {
-        _text(canvas, 'Tap to play again', h * 0.024, c + Offset(0, h * 0.09),
+      if (g.deadTimer > 0.8) {
+        _text(canvas, 'Tap to race again', h * 0.024, c + Offset(0, h * 0.11),
             color: const Color(0xFF1565C0), shadow: false);
       }
     }
@@ -349,45 +402,47 @@ class GamePainter extends CustomPainter {
     }
   }
 
-  void _drawBird(Canvas canvas) {
-    final r = g.birdR;
-    double angle = 0;
-    if (g.phase != Phase.ready) {
-      angle = (g.vel / (g.h * 1.2)).clamp(-0.45, 1.2).toDouble();
+  void _car(Canvas c, Offset center, Color color, bool player) {
+    final cw = g.carW, ch = g.carH;
+    c.save();
+    c.translate(center.dx, center.dy);
+    if (player) c.rotate(g.tilt);
+
+    RRect rr(double x, double y, double ww, double hh, double r) =>
+        RRect.fromRectAndRadius(
+            Rect.fromCenter(center: Offset(x, y), width: ww, height: hh),
+            Radius.circular(r));
+
+    c.drawRRect(rr(4, 6, cw, ch, cw * 0.3), Paint()..color = Colors.black26);
+    final wheel = Paint()..color = const Color(0xFF212121);
+    for (final sx in [-1.0, 1.0]) {
+      for (final sy in [-1.0, 1.0]) {
+        c.drawRRect(rr(sx * cw * 0.48, sy * ch * 0.3, cw * 0.22, ch * 0.2, 3), wheel);
+      }
     }
-    canvas.save();
-    canvas.translate(g.birdX, g.birdY);
-    canvas.rotate(angle);
-
-    canvas.drawCircle(Offset.zero, r, Paint()..color = const Color(0xFFFFCA28));
-    canvas.drawCircle(
-        Offset.zero,
-        r,
-        Paint()
-          ..color = const Color(0xFFF57F17)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = r * 0.12);
-
-    final flap = g.phase == Phase.over ? 0.0 : sin(g.t * 22) * r * 0.25;
-    canvas.drawOval(
-        Rect.fromCenter(
-            center: Offset(-r * 0.35, r * 0.15 + flap), width: r * 1.1, height: r * 0.65),
-        Paint()..color = const Color(0xFFFFE082));
-
-    canvas.drawCircle(Offset(r * 0.4, -r * 0.35), r * 0.36, Paint()..color = Colors.white);
-    canvas.drawCircle(Offset(r * 0.52, -r * 0.35), r * 0.16, Paint()..color = Colors.black);
-
-    final beak = Path()
-      ..moveTo(r * 0.75, -r * 0.05)
-      ..lineTo(r * 1.4, r * 0.15)
-      ..lineTo(r * 0.75, r * 0.4)
-      ..close();
-    canvas.drawPath(beak, Paint()..color = const Color(0xFFFB8C00));
-    canvas.restore();
+    c.drawRRect(rr(0, 0, cw, ch, cw * 0.3), Paint()..color = color);
+    if (player) {
+      final stripe = Paint()..color = Colors.white;
+      c.drawRect(Rect.fromLTWH(-cw * 0.14, -ch * 0.5, cw * 0.08, ch), stripe);
+      c.drawRect(Rect.fromLTWH(cw * 0.06, -ch * 0.5, cw * 0.08, ch), stripe);
+    }
+    c.drawRRect(rr(0, -ch * 0.12, cw * 0.74, ch * 0.2, cw * 0.12),
+        Paint()..color = const Color(0xFF263238));
+    c.drawRRect(rr(0, ch * 0.08, cw * 0.66, ch * 0.22, cw * 0.1),
+        Paint()..color = Color.lerp(color, Colors.black, 0.2)!);
+    c.drawRRect(rr(0, ch * 0.28, cw * 0.62, ch * 0.1, cw * 0.08),
+        Paint()..color = const Color(0xFF37474F));
+    final head = Paint()..color = const Color(0xFFFFF59D);
+    c.drawCircle(Offset(-cw * 0.3, -ch * 0.45), cw * 0.09, head);
+    c.drawCircle(Offset(cw * 0.3, -ch * 0.45), cw * 0.09, head);
+    final tail = Paint()..color = const Color(0xFFD50000);
+    c.drawRect(Rect.fromCenter(center: Offset(-cw * 0.3, ch * 0.47), width: cw * 0.2, height: ch * 0.04), tail);
+    c.drawRect(Rect.fromCenter(center: Offset(cw * 0.3, ch * 0.47), width: cw * 0.2, height: ch * 0.04), tail);
+    c.restore();
   }
 
-  void _text(Canvas canvas, String s, double fontSize, Offset center,
-      {Color color = Colors.white, bool shadow = true}) {
+  void _text(Canvas canvas, String s, double fontSize, Offset at,
+      {Color color = Colors.white, bool shadow = true, bool left = false, bool right = false}) {
     final tp = TextPainter(
       text: TextSpan(
         text: s,
@@ -396,15 +451,14 @@ class GamePainter extends CustomPainter {
           color: color,
           fontWeight: FontWeight.w900,
           shadows: shadow
-              ? const [
-                  Shadow(color: Colors.black45, offset: Offset(2, 3), blurRadius: 4)
-                ]
+              ? const [Shadow(color: Colors.black54, offset: Offset(2, 3), blurRadius: 4)]
               : null,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+    final dx = left ? 0.0 : (right ? tp.width : tp.width / 2);
+    tp.paint(canvas, at - Offset(dx, tp.height / 2));
   }
 
   @override

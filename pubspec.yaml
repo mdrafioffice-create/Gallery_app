@@ -1,5 +1,5 @@
-name: sky_hopper
-description: Sky Hopper - a tap-to-fly arcade game.
+name: road_rush
+description: Road Rush - a top-down car racing game.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -21,5 +21,5 @@ flutter_launcher_icons:
   android: true
   ios: false
   image_path: "assets/icon.png"
-  adaptive_icon_background: "#4FC3F7"
+  adaptive_icon_background: "#455A64"
   adaptive_icon_foreground: "assets/icon_foreground.png"
