@@ -1,41 +1,21 @@
-# My Gallery – Flutter phone gallery app
+# Family Safety – a transparent child-safety app (Flutter)
 
-Features: albums, photo + video grid, full-screen swipe, pinch-zoom, video player, share, delete.
+A simple safety app for a child's phone that keeps a parent in the loop — openly, with the child's knowledge.
 
-## Build the APK (on a PC)
+On first launch you pick whether the phone is the **child's** or the **parent's**.
 
-1. Install Flutter: https://docs.flutter.dev/get-started/install (plus Android Studio for the Android SDK).
-2. Create the project:
-   ```
-   flutter create gallery_app
-   cd gallery_app
-   ```
-3. Replace `pubspec.yaml` and `lib/main.dart` with the files from this zip.
-4. Open `android/app/src/main/AndroidManifest.xml` and paste these lines
-   just **above** the `<application` tag:
-   ```xml
-   <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-   <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-       android:maxSdkVersion="32" />
-   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-       android:maxSdkVersion="29" />
-   ```
-   And add `android:requestLegacyExternalStorage="true"` inside the `<application ...>` tag.
-5. Copy the `assets` folder (app icon) into the project too, then run:
-   ```
-   flutter pub get
-   dart run flutter_launcher_icons
-   flutter build apk --release
-   ```
-6. Your APK is at `build/app/outputs/flutter-apk/app-release.apk`.
-   Copy it to your phone and install (allow "Install unknown apps").
+On the child's phone:
+- **SOS** – one tap prepares an emergency text with their live location to the guardians you set.
+- **I'm safe** – sends an "arrived safely" text.
+- **Safe walk** – a countdown; if the child doesn't tap "I made it" in time, guardians get an alert with the last location.
+- **Emergency info** – name, blood type, allergies, notes and guardian numbers on one screen.
 
-## No PC?
+Alerts go out as normal text messages with a Google Maps link, so they work with no internet and no server. The child taps send in their own messages app, so nothing is ever sent secretly.
 
-Upload the project to GitHub and build it for free with Codemagic
-(codemagic.io) — it gives you a downloadable APK.
+A continuous live map on the parent's phone would need a free online server (e.g. Firebase) linked to both phones; the app is structured for it but it is not included.
 
-## Change the app name
+## Get the APK
+Built on GitHub on every push and published here:
+https://github.com/mdrafioffice-create/Gallery_app/releases/tag/child-safety-latest
 
-Edit `android:label="..."` in `AndroidManifest.xml`.
+Open that page in Chrome on the phone, tap **FamilySafety.apk**, then install.

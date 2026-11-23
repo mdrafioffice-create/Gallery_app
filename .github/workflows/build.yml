@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,29 +23,32 @@ jobs:
           channel: stable
 
       - name: Create Android project files
-        run: flutter create --platforms=android --project-name gallery_app --org com.mygallery .
+        run: flutter create --platforms=android --project-name family_safety --org com.mysafety .
 
-      - name: Add permissions and app name
+      - name: App name, permissions and lint
         run: |
-          python3 - <<'EOF'
-          p = "android/app/src/main/AndroidManifest.xml"
-          s = open(p).read()
-          perms = (
-              '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n'
-              '    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />\n'
-              '    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />\n'
-              '    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n'
-              '    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n'
-              '    <application android:requestLegacyExternalStorage="true"'
-          )
-          if "READ_MEDIA_IMAGES" not in s:
-              s = s.replace("<application", perms, 1)
-          s = s.replace('android:label="gallery_app"', 'android:label="My Gallery"')
-          open(p, "w").write(s)
-          print(s)
-
-          # Turn off release lint (it crashes on a plugin, not our code)
+          python3 - <<'PY'
           import os
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p).read().replace('android:label="family_safety"', 'android:label="Family Safety"')
+          perms = (
+              '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n'
+              '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n'
+              '    <queries>\n'
+              '        <intent>\n'
+              '            <action android:name="android.intent.action.VIEW"/>\n'
+              '            <data android:scheme="sms"/>\n'
+              '        </intent>\n'
+              '        <intent>\n'
+              '            <action android:name="android.intent.action.DIAL"/>\n'
+              '            <data android:scheme="tel"/>\n'
+              '        </intent>\n'
+              '    </queries>\n'
+              '    <application'
+          )
+          if "ACCESS_FINE_LOCATION" not in s:
+              s = s.replace("<application", perms, 1)
+          open(p, "w").write(s)
           g = "android/app/build.gradle.kts"
           if os.path.exists(g):
               block = "android {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n"
@@ -53,15 +59,14 @@ jobs:
           if "checkReleaseBuilds" not in t:
               t = t.replace("android {\n", block, 1)
           open(g, "w").write(t)
-          print(t)
-          EOF
+          PY
 
       - run: flutter pub get
 
       - name: Generate app icon
         run: dart run flutter_launcher_icons
 
-      - name: Use fixed signing key (so updates install over the old app)
+      - name: Use fixed signing key
         run: mkdir -p ~/.android && cp signing/debug.keystore ~/.android/debug.keystore
 
       - name: Build APK
@@ -69,5 +74,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MyGallery-v1.1-apk
+          name: FamilySafety-v1.0-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Publish APK as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk FamilySafety.apk
+          gh release delete child-safety-latest -y --cleanup-tag --repo ${{ github.repository }} || true
+          gh release create child-safety-latest FamilySafety.apk --repo ${{ github.repository }} --target ${{ github.sha }} --title "Family Safety (latest)" --notes "Tap FamilySafety.apk below to download and install."
