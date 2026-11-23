@@ -562,8 +562,10 @@ class GamePainter extends CustomPainter {
       _car(canvas, Offset(g.laneX(c.lane), c.y), c.color, false);
     }
     if (g.nitroTime > 0) _flames(canvas);
-    _car(canvas, Offset(g.playerX, g.playerY), g.mySkin.color, true,
-        stripe: g.mySkin.stripe);
+    if (g.phase != Phase.ready) {
+      _car(canvas, Offset(g.playerX, g.playerY), g.mySkin.color, true,
+          stripe: g.mySkin.stripe);
+    }
 
     // Smash bursts
     for (final b in g.bursts) {
@@ -668,7 +670,7 @@ class GamePainter extends CustomPainter {
     _text(canvas, label, h * (g.skinOwned ? 0.032 : 0.024), b.center);
 
     _text(canvas, 'Tap left or right to steer', h * 0.021, Offset(w / 2, h * 0.68));
-    _text(canvas, 'Grab coins to buy cars  •  Blue ⚡ = NITRO', h * 0.019, Offset(w / 2, h * 0.71));
+    _text(canvas, 'Coins buy new cars  •  Blue bolt = NITRO', h * 0.019, Offset(w / 2, h * 0.71));
     if (g.best > 0) {
       _text(canvas, 'Best: ${g.best}', h * 0.024, Offset(w / 2, h * 0.75));
     }
