@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -25,21 +26,27 @@ class RoadRushApp extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------- data
+
 enum Phase { ready, playing, over }
 
-class Car {
-  Car(this.lane, this.y, this.color);
-  final int lane;
-  double y;
+class CarSkin {
+  const CarSkin(this.name, this.color, this.price, {this.stripe = Colors.white});
+  final String name;
   final Color color;
+  final int price;
+  final Color stripe;
 }
 
-class Coin {
-  Coin(this.lane, this.y);
-  final int lane;
-  double y;
-  bool taken = false;
-}
+const skins = [
+  CarSkin('Red Fury', Color(0xFFE53935), 0),
+  CarSkin('Blue Bolt', Color(0xFF1E88E5), 15),
+  CarSkin('Green Viper', Color(0xFF43A047), 30),
+  CarSkin('Sunny', Color(0xFFFDD835), 50, stripe: Color(0xFF212121)),
+  CarSkin('Purple Storm', Color(0xFF8E24AA), 80),
+  CarSkin('Midnight', Color(0xFF37474F), 120, stripe: Color(0xFFFFD54F)),
+  CarSkin('Gold Rush', Color(0xFFFFB300), 200, stripe: Color(0xFF212121)),
+];
 
 const trafficColors = [
   Color(0xFF1E88E5),
@@ -51,6 +58,108 @@ const trafficColors = [
   Color(0xFF43A047),
 ];
 
+class Car {
+  Car(this.lane, this.y, this.color);
+  final int lane;
+  double y;
+  final Color color;
+  bool smashed = false;
+}
+
+class Pickup {
+  Pickup(this.lane, this.y, this.nitro);
+  final int lane;
+  double y;
+  final bool nitro;
+  bool taken = false;
+}
+
+class Burst {
+  Burst(this.x, this.y);
+  final double x, y;
+  double age = 0;
+}
+
+// ---------------------------------------------------------------- sound
+
+class Sfx {
+  bool on = true;
+  final Map<String, AudioPlayer> _players = {};
+  AudioPlayer? _engine;
+  double _pitch = 1;
+  bool _engineRunning = false;
+
+  AudioPlayer _make() => AudioPlayer(
+        handleInterruptions: false,
+        handleAudioSessionActivation: false,
+      );
+
+  Future<void> init() async {
+    for (final n in ['coin', 'crash', 'nitro', 'smash', 'click']) {
+      try {
+        final p = _make();
+        await p.setAsset('assets/sounds/$n.wav');
+        _players[n] = p;
+      } catch (_) {}
+    }
+    try {
+      final e = _make();
+      await e.setAsset('assets/sounds/engine.wav');
+      await e.setLoopMode(LoopMode.one);
+      await e.setVolume(0.45);
+      _engine = e;
+      if (_engineRunning && on) e.play();
+    } catch (_) {}
+  }
+
+  void play(String name) {
+    if (!on) return;
+    final p = _players[name];
+    if (p == null) return;
+    p.seek(Duration.zero).catchError((_) {});
+    p.play().catchError((_) {});
+  }
+
+  void engineStart() {
+    _engineRunning = true;
+    if (on) _engine?.play().catchError((_) {});
+  }
+
+  void engineStop() {
+    _engineRunning = false;
+    _engine?.pause().catchError((_) {});
+  }
+
+  void enginePause() => _engine?.pause().catchError((_) {});
+  void engineResume() {
+    if (_engineRunning && on) _engine?.play().catchError((_) {});
+  }
+
+  void enginePitch(double v) {
+    if ((v - _pitch).abs() < 0.04) return;
+    _pitch = v;
+    _engine?.setPitch(v).catchError((_) {});
+  }
+
+  void setOn(bool v) {
+    on = v;
+    if (!v) {
+      _engine?.pause().catchError((_) {});
+    } else {
+      engineResume();
+    }
+  }
+
+  void dispose() {
+    for (final p in _players.values) {
+      p.dispose();
+    }
+    _engine?.dispose();
+  }
+}
+
+// ---------------------------------------------------------------- game
+
 class GamePage extends StatefulWidget {
   const GamePage({super.key});
 
@@ -59,10 +168,12 @@ class GamePage extends StatefulWidget {
 }
 
 class _GamePageState extends State<GamePage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final Ticker _ticker;
   Duration _last = Duration.zero;
   final Random _rng = Random();
+  final Sfx sfx = Sfx();
+  SharedPreferences? _prefs;
   Size size = Size.zero;
 
   Phase phase = Phase.ready;
@@ -75,16 +186,25 @@ class _GamePageState extends State<GamePage>
   double dist = 0;
   double spawnTimer = 0;
   double coinTimer = 0;
+  double nitroTimer = 0;
+  double nitroTime = 0;
   double deadTimer = 0;
   double flash = 0;
   double crashX = 0;
   double crashY = 0;
   int coins = 0;
+  int bonus = 0;
   int best = 0;
+  int wallet = 0;
+  int skin = 0;
+  Set<int> owned = {0};
   bool newBest = false;
   final List<Car> cars = [];
-  final List<Coin> coinList = [];
+  final List<Pickup> pickups = [];
+  final List<Burst> bursts = [];
   final List<int> lastLanes = [];
+
+  static const nitroLength = 3.5;
 
   double get w => size.width;
   double get h => size.height;
@@ -95,24 +215,65 @@ class _GamePageState extends State<GamePage>
   double get carW => laneW * 0.56;
   double get carH => carW * 1.85;
   double get playerY => h * 0.8;
-  double get speed =>
+  double get baseSpeed =>
       phase == Phase.playing ? h * (0.62 + min(runTime, 70) * 0.011) : h * 0.35;
-  int get score => (dist / h * 10).floor() + coins * 25;
+  double get speed => baseSpeed * (nitroTime > 0 ? 1.6 : 1.0);
+  int get score => (dist / h * 10).floor() + coins * 25 + bonus;
   int get kmh => (speed / h * 160).round();
+  CarSkin get mySkin => skins[skin];
+  bool get skinOwned => owned.contains(skin);
+
+  // Tap areas on the garage (start) screen
+  Rect get soundRect => Rect.fromLTWH(w * 0.62, h * 0.04, w * 0.34, h * 0.055);
+  Rect get leftArrowRect => Rect.fromCenter(center: Offset(w * 0.15, h * 0.4), width: w * 0.24, height: h * 0.14);
+  Rect get rightArrowRect => Rect.fromCenter(center: Offset(w * 0.85, h * 0.4), width: w * 0.24, height: h * 0.14);
+  Rect get mainButtonRect => Rect.fromCenter(center: Offset(w / 2, h * 0.6), width: w * 0.62, height: h * 0.075);
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _ticker = createTicker(_onTick)..start();
+    sfx.init();
     SharedPreferences.getInstance().then((p) {
-      if (mounted) setState(() => best = p.getInt('best') ?? 0);
+      _prefs = p;
+      if (!mounted) return;
+      setState(() {
+        best = p.getInt('best') ?? 0;
+        wallet = p.getInt('wallet') ?? 0;
+        owned = {0, ...(p.getStringList('owned') ?? []).map(int.parse)};
+        final s = p.getInt('skin') ?? 0;
+        skin = (s >= 0 && s < skins.length && owned.contains(s)) ? s : 0;
+        sfx.setOn(p.getBool('sound') ?? true);
+      });
     });
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      sfx.engineResume();
+    } else {
+      sfx.enginePause();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ticker.dispose();
+    sfx.dispose();
     super.dispose();
+  }
+
+  void _save() {
+    final p = _prefs;
+    if (p == null) return;
+    p.setInt('best', best);
+    p.setInt('wallet', wallet);
+    p.setInt('skin', skin);
+    p.setStringList('owned', owned.map((e) => '$e').toList());
+    p.setBool('sound', sfx.on);
   }
 
   void _onTick(Duration elapsed) {
@@ -127,6 +288,10 @@ class _GamePageState extends State<GamePage>
     t += dt;
     if (flash > 0) flash = max(0, flash - dt * 3);
     if (playerX < 0) playerX = laneX(lane);
+    for (final b in bursts) {
+      b.age += dt;
+    }
+    bursts.removeWhere((b) => b.age > 0.6);
 
     if (phase == Phase.over) {
       deadTimer += dt;
@@ -136,7 +301,6 @@ class _GamePageState extends State<GamePage>
     final sp = speed;
     scroll += sp * dt;
 
-    // Smooth steering toward the chosen lane, with a little body tilt.
     final dx = laneX(lane) - playerX;
     playerX += dx * min(1.0, dt * 14);
     tilt = (dx / laneW).clamp(-1.0, 1.0).toDouble() * 0.25;
@@ -145,15 +309,17 @@ class _GamePageState extends State<GamePage>
 
     runTime += dt;
     dist += sp * dt;
+    if (nitroTime > 0) nitroTime = max(0, nitroTime - dt);
+    sfx.enginePitch((0.85 + (sp / h - 0.62) * 0.6).clamp(0.8, 2.0).toDouble());
 
     for (final c in cars) {
-      c.y += sp * 0.55 * dt; // traffic is slower than you, so you overtake it
+      c.y += sp * 0.55 * dt;
     }
-    cars.removeWhere((c) => c.y > h + carH);
-    for (final c in coinList) {
-      c.y += sp * dt;
+    cars.removeWhere((c) => c.smashed || c.y > h + carH);
+    for (final p in pickups) {
+      p.y += sp * dt;
     }
-    coinList.removeWhere((c) => c.taken || c.y > h + carW);
+    pickups.removeWhere((p) => p.taken || p.y > h + carW);
 
     spawnTimer -= dt;
     if (spawnTimer <= 0) {
@@ -162,8 +328,13 @@ class _GamePageState extends State<GamePage>
     }
     coinTimer -= dt;
     if (coinTimer <= 0) {
-      _spawnCoin();
+      _spawnPickup(false);
       coinTimer = 1.4 + _rng.nextDouble() * 1.2;
+    }
+    nitroTimer -= dt;
+    if (nitroTimer <= 0) {
+      _spawnPickup(true);
+      nitroTimer = 10 + _rng.nextDouble() * 8;
     }
 
     final me = Rect.fromCenter(
@@ -171,16 +342,30 @@ class _GamePageState extends State<GamePage>
     for (final c in cars) {
       final r = Rect.fromCenter(
           center: Offset(laneX(c.lane), c.y), width: carW * 0.85, height: carH * 0.88);
-      if (me.overlaps(r)) {
+      if (!me.overlaps(r)) continue;
+      if (nitroTime > 0) {
+        // Nitro makes you unstoppable: smash the car out of the way.
+        c.smashed = true;
+        bonus += 10;
+        bursts.add(Burst(laneX(c.lane), c.y));
+        sfx.play('smash');
+        HapticFeedback.mediumImpact();
+      } else {
         _crash();
         return;
       }
     }
-    for (final c in coinList) {
-      final d = (Offset(laneX(c.lane), c.y) - Offset(playerX, playerY)).distance;
-      if (!c.taken && d < carW * 0.8) {
-        c.taken = true;
+    for (final p in pickups) {
+      final d = (Offset(laneX(p.lane), p.y) - Offset(playerX, playerY)).distance;
+      if (p.taken || d >= carW * 0.8) continue;
+      p.taken = true;
+      if (p.nitro) {
+        nitroTime = nitroLength;
+        sfx.play('nitro');
+        HapticFeedback.mediumImpact();
+      } else {
         coins++;
+        sfx.play('coin');
         HapticFeedback.selectionClick();
       }
     }
@@ -197,45 +382,52 @@ class _GamePageState extends State<GamePage>
     if (lastLanes.length > 2) lastLanes.removeAt(0);
   }
 
-  void _spawnCoin() {
+  void _spawnPickup(bool nitro) {
     final free = [0, 1, 2]
-        .where((l) => !cars.any((c) => c.lane == l && c.y < carH * 2))
+        .where((l) =>
+            !cars.any((c) => c.lane == l && c.y < carH * 2) &&
+            !pickups.any((p) => p.lane == l && p.y < carW * 2))
         .toList();
     if (free.isEmpty) return;
-    coinList.add(Coin(free[_rng.nextInt(free.length)], -carW));
+    pickups.add(Pickup(free[_rng.nextInt(free.length)], -carW, nitro));
   }
 
   void _crash() {
     phase = Phase.over;
     deadTimer = 0;
     flash = 1;
+    nitroTime = 0;
     crashX = playerX;
     crashY = playerY - carH * 0.4;
+    sfx.engineStop();
+    sfx.play('crash');
     HapticFeedback.heavyImpact();
+    wallet += coins;
     newBest = score > best;
-    if (newBest) {
-      best = score;
-      SharedPreferences.getInstance().then((p) => p.setInt('best', best));
-    }
+    if (newBest) best = score;
+    _save();
   }
 
   void _resetRun() {
     cars.clear();
-    coinList.clear();
+    pickups.clear();
+    bursts.clear();
     lastLanes.clear();
     runTime = 0;
     dist = 0;
     coins = 0;
+    bonus = 0;
+    nitroTime = 0;
     spawnTimer = 0.8;
     coinTimer = 1.5;
+    nitroTimer = 6;
   }
 
-  void _tap(double x) {
+  void _tap(Offset pos) {
     if (phase == Phase.ready) {
-      _resetRun();
-      phase = Phase.playing;
+      _garageTap(pos);
     } else if (phase == Phase.playing) {
-      if (x < w / 2) {
+      if (pos.dx < w / 2) {
         lane = max(0, lane - 1);
       } else {
         lane = min(2, lane + 1);
@@ -249,6 +441,33 @@ class _GamePageState extends State<GamePage>
     }
   }
 
+  void _garageTap(Offset pos) {
+    if (soundRect.contains(pos)) {
+      sfx.setOn(!sfx.on);
+      sfx.play('click');
+      _save();
+    } else if (leftArrowRect.contains(pos)) {
+      skin = (skin - 1 + skins.length) % skins.length;
+      sfx.play('click');
+    } else if (rightArrowRect.contains(pos)) {
+      skin = (skin + 1) % skins.length;
+      sfx.play('click');
+    } else if (mainButtonRect.contains(pos)) {
+      if (skinOwned) {
+        _resetRun();
+        phase = Phase.playing;
+        sfx.engineStart();
+        _save();
+      } else if (wallet >= mySkin.price) {
+        wallet -= mySkin.price;
+        owned.add(skin);
+        sfx.play('coin');
+        HapticFeedback.mediumImpact();
+        _save();
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -258,7 +477,7 @@ class _GamePageState extends State<GamePage>
           size = constraints.biggest;
           return Listener(
             behavior: HitTestBehavior.opaque,
-            onPointerDown: (e) => _tap(e.localPosition.dx),
+            onPointerDown: (e) => _tap(e.localPosition),
             child: CustomPaint(size: size, painter: GamePainter(this)),
           );
         },
@@ -266,6 +485,8 @@ class _GamePageState extends State<GamePage>
     );
   }
 }
+
+// ---------------------------------------------------------------- drawing
 
 class GamePainter extends CustomPainter {
   GamePainter(this.g);
@@ -284,7 +505,7 @@ class GamePainter extends CustomPainter {
       canvas.drawRect(Rect.fromLTWH(0, y, w, band), grass2);
     }
 
-    // Trees along the roadside
+    // Trees
     for (int i = 0; i < 6; i++) {
       final y = (i * h * 0.22 + g.scroll) % (h * 1.32) - h * 0.16;
       final x = i.isEven ? w * 0.055 : w - w * 0.055;
@@ -294,22 +515,17 @@ class GamePainter extends CustomPainter {
           Paint()..color = const Color(0xFF43A047));
     }
 
-    // Road
+    // Road, curbs and lane dashes
     canvas.drawRect(Rect.fromLTRB(g.roadL, 0, g.roadR, h),
         Paint()..color = const Color(0xFF455A64));
-
-    // Red and white curbs
     final cl = h * 0.04;
     final cw = w * 0.025;
     int idx = 0;
     for (double y = -cl * 2 + g.scroll % (cl * 2); y < h; y += cl, idx++) {
-      final p = Paint()
-        ..color = idx.isEven ? const Color(0xFFE53935) : Colors.white;
+      final p = Paint()..color = idx.isEven ? const Color(0xFFE53935) : Colors.white;
       canvas.drawRect(Rect.fromLTWH(g.roadL - cw, y, cw, cl), p);
       canvas.drawRect(Rect.fromLTWH(g.roadR, y, cw, cl), p);
     }
-
-    // Lane dashes
     final period = h * 0.12;
     final dash = Paint()..color = Colors.white70;
     for (int i = 1; i < 3; i++) {
@@ -319,21 +535,43 @@ class GamePainter extends CustomPainter {
       }
     }
 
-    // Coins
-    for (final c in g.coinList) {
-      final o = Offset(g.laneX(c.lane), c.y);
-      final r = g.carW * 0.28;
-      canvas.drawCircle(o, r, Paint()..color = const Color(0xFFFFA000));
-      canvas.drawCircle(o, r * 0.78, Paint()..color = const Color(0xFFFFD54F));
-      canvas.drawCircle(o + Offset(-r * 0.25, -r * 0.25), r * 0.18,
-          Paint()..color = Colors.white70);
+    // Speed lines during nitro
+    if (g.nitroTime > 0) {
+      final line = Paint()
+        ..color = Colors.white.withOpacity(0.45)
+        ..strokeWidth = 2;
+      for (int i = 0; i < 10; i++) {
+        final x = g.roadL + ((i * 0.37) % 1.0) * (g.roadR - g.roadL);
+        final y = (i * h * 0.17 + g.scroll * 1.5) % (h * 1.1) - h * 0.05;
+        canvas.drawLine(Offset(x, y), Offset(x, y + h * 0.08), line);
+      }
     }
 
-    // Traffic and the player's car
+    // Pickups
+    for (final p in g.pickups) {
+      final o = Offset(g.laneX(p.lane), p.y);
+      if (p.nitro) {
+        _nitroIcon(canvas, o, g.carW * 0.34);
+      } else {
+        _coin(canvas, o, g.carW * 0.28);
+      }
+    }
+
+    // Cars
     for (final c in g.cars) {
       _car(canvas, Offset(g.laneX(c.lane), c.y), c.color, false);
     }
-    _car(canvas, Offset(g.playerX, g.playerY), const Color(0xFFE53935), true);
+    if (g.nitroTime > 0) _flames(canvas);
+    _car(canvas, Offset(g.playerX, g.playerY), g.mySkin.color, true,
+        stripe: g.mySkin.stripe);
+
+    // Smash bursts
+    for (final b in g.bursts) {
+      final a = max(0.0, 1 - b.age / 0.6);
+      final r = g.carW * (0.5 + b.age * 2.5);
+      canvas.drawCircle(Offset(b.x, b.y), r, Paint()..color = const Color(0xFFFF6F00).withOpacity(a * 0.7));
+      canvas.drawCircle(Offset(b.x, b.y), r * 0.55, Paint()..color = const Color(0xFFFFEB3B).withOpacity(a));
+    }
 
     // Crash explosion
     if (g.phase == Phase.over && g.deadTimer < 0.9) {
@@ -345,56 +583,9 @@ class GamePainter extends CustomPainter {
       canvas.drawCircle(o, r * 0.6, Paint()..color = const Color(0xFFFFEB3B).withOpacity(a));
     }
 
-    // HUD
-    if (g.phase != Phase.ready) {
-      _text(canvas, '${g.score}', h * 0.06, Offset(w / 2, h * 0.07));
-      final cy = h * 0.075;
-      canvas.drawCircle(Offset(w * 0.07, cy), h * 0.014, Paint()..color = const Color(0xFFFFA000));
-      canvas.drawCircle(Offset(w * 0.07, cy), h * 0.010, Paint()..color = const Color(0xFFFFD54F));
-      _text(canvas, '${g.coins}', h * 0.026, Offset(w * 0.07 + h * 0.035, cy), left: true);
-      _text(canvas, '${g.kmh} km/h', h * 0.022, Offset(w * 0.96, cy), right: true);
-    }
-
-    if (g.phase == Phase.ready) {
-      canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.black26);
-      _text(canvas, 'Road Rush', h * 0.065, Offset(w / 2, h * 0.24));
-      _text(canvas, 'Tap left or right to steer', h * 0.024, Offset(w / 2, h * 0.32));
-      _text(canvas, 'Dodge traffic, grab coins', h * 0.024, Offset(w / 2, h * 0.36));
-      final pulse = 0.6 + 0.4 * sin(g.t * 4).abs();
-      _text(canvas, 'Tap to start', h * 0.034, Offset(w / 2, h * 0.56),
-          color: Colors.white.withOpacity(pulse));
-      if (g.best > 0) {
-        _text(canvas, 'Best: ${g.best}', h * 0.026, Offset(w / 2, h * 0.63));
-      }
-    }
-
-    if (g.phase == Phase.over) {
-      final panel = RRect.fromRectAndRadius(
-        Rect.fromCenter(center: Offset(w / 2, h * 0.42), width: w * 0.78, height: h * 0.34),
-        const Radius.circular(24),
-      );
-      canvas.drawRRect(panel, Paint()..color = const Color(0xEEFFF8E1));
-      canvas.drawRRect(
-          panel,
-          Paint()
-            ..color = const Color(0xFFE53935)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 5);
-      final c = panel.center;
-      _text(canvas, 'Crash!', h * 0.055, c + Offset(0, -h * 0.11), color: const Color(0xFFD32F2F));
-      _text(canvas, 'Score: ${g.score}', h * 0.032, c + Offset(0, -h * 0.04),
-          color: const Color(0xFF5D4037), shadow: false);
-      _text(canvas, 'Coins: ${g.coins}', h * 0.024, c + Offset(0, h * 0.008),
-          color: const Color(0xFFFF8F00), shadow: false);
-      _text(canvas, g.newBest ? 'New best!' : 'Best: ${g.best}', h * 0.028,
-          c + Offset(0, h * 0.052),
-          color: g.newBest ? const Color(0xFF2E7D32) : const Color(0xFF5D4037),
-          shadow: false);
-      if (g.deadTimer > 0.8) {
-        _text(canvas, 'Tap to race again', h * 0.024, c + Offset(0, h * 0.11),
-            color: const Color(0xFF1565C0), shadow: false);
-      }
-    }
+    if (g.phase != Phase.ready) _hud(canvas);
+    if (g.phase == Phase.ready) _garage(canvas);
+    if (g.phase == Phase.over) _gameOver(canvas);
 
     if (g.flash > 0) {
       canvas.drawRect(Rect.fromLTWH(0, 0, w, h),
@@ -402,11 +593,183 @@ class GamePainter extends CustomPainter {
     }
   }
 
-  void _car(Canvas c, Offset center, Color color, bool player) {
+  void _hud(Canvas canvas) {
+    final w = g.w, h = g.h;
+    _text(canvas, '${g.score}', h * 0.06, Offset(w / 2, h * 0.07));
+    final cy = h * 0.075;
+    _coin(canvas, Offset(w * 0.07, cy), h * 0.014);
+    _text(canvas, '${g.coins}', h * 0.026, Offset(w * 0.07 + h * 0.025, cy), left: true);
+    _text(canvas, '${g.kmh} km/h', h * 0.022, Offset(w * 0.96, cy), right: true,
+        color: g.nitroTime > 0 ? const Color(0xFF80D8FF) : Colors.white);
+    if (g.nitroTime > 0) {
+      final bw = w * 0.44;
+      final bar = Rect.fromCenter(center: Offset(w / 2, h * 0.125), width: bw, height: h * 0.016);
+      canvas.drawRRect(RRect.fromRectAndRadius(bar, const Radius.circular(8)),
+          Paint()..color = Colors.black38);
+      final fill = Rect.fromLTWH(bar.left, bar.top,
+          bw * (g.nitroTime / _GamePageState.nitroLength), bar.height);
+      canvas.drawRRect(RRect.fromRectAndRadius(fill, const Radius.circular(8)),
+          Paint()..color = const Color(0xFF00B0FF));
+      _text(canvas, 'NITRO!', h * 0.024, Offset(w / 2, h * 0.155),
+          color: const Color(0xFF80D8FF));
+    }
+  }
+
+  void _garage(Canvas canvas) {
+    final w = g.w, h = g.h;
+    canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.black45);
+
+    // Wallet and sound switch
+    _coin(canvas, Offset(w * 0.07, h * 0.067), h * 0.015);
+    _text(canvas, '${g.wallet}', h * 0.028, Offset(w * 0.07 + h * 0.026, h * 0.067), left: true);
+    final sr = g.soundRect;
+    canvas.drawRRect(RRect.fromRectAndRadius(sr, Radius.circular(sr.height / 2)),
+        Paint()..color = Colors.black45);
+    _text(canvas, g.sfx.on ? 'Sound: ON' : 'Sound: OFF', h * 0.02, sr.center,
+        color: g.sfx.on ? Colors.white : Colors.white54, shadow: false);
+
+    _text(canvas, 'Road Rush', h * 0.06, Offset(w / 2, h * 0.15));
+    _text(canvas, 'GARAGE', h * 0.02, Offset(w / 2, h * 0.225), color: const Color(0xFFFFD54F));
+    _text(canvas, g.mySkin.name, h * 0.032, Offset(w / 2, h * 0.26));
+
+    // Big preview of the selected car, with arrows to switch
+    canvas.save();
+    canvas.translate(w / 2, h * 0.4);
+    canvas.scale(1.7);
+    _car(canvas, Offset.zero, g.mySkin.color, true, stripe: g.mySkin.stripe, tiltOn: false);
+    canvas.restore();
+    if (!g.skinOwned) {
+      _text(canvas, 'LOCKED', h * 0.022, Offset(w / 2, h * 0.4), color: Colors.white);
+    }
+    _arrow(canvas, g.leftArrowRect.center, true);
+    _arrow(canvas, g.rightArrowRect.center, false);
+    _text(canvas, '${g.skin + 1} / ${skins.length}', h * 0.018, Offset(w / 2, h * 0.52),
+        color: Colors.white70, shadow: false);
+
+    // Main button: start, buy, or not enough coins
+    final b = g.mainButtonRect;
+    String label;
+    Color color;
+    if (g.skinOwned) {
+      final pulse = 0.85 + 0.15 * sin(g.t * 4).abs();
+      label = 'START';
+      color = Color.lerp(const Color(0xFF2E7D32), const Color(0xFF43A047), pulse)!;
+    } else if (g.wallet >= g.mySkin.price) {
+      label = 'BUY  •  ${g.mySkin.price} coins';
+      color = const Color(0xFFFF8F00);
+    } else {
+      label = 'Need ${g.mySkin.price} coins';
+      color = const Color(0xFF616161);
+    }
+    canvas.drawRRect(RRect.fromRectAndRadius(b.shift(const Offset(0, 4)), Radius.circular(b.height / 2)),
+        Paint()..color = Colors.black38);
+    canvas.drawRRect(RRect.fromRectAndRadius(b, Radius.circular(b.height / 2)),
+        Paint()..color = color);
+    _text(canvas, label, h * (g.skinOwned ? 0.032 : 0.024), b.center);
+
+    _text(canvas, 'Tap left or right to steer', h * 0.021, Offset(w / 2, h * 0.68));
+    _text(canvas, 'Grab coins to buy cars  •  Blue ⚡ = NITRO', h * 0.019, Offset(w / 2, h * 0.71));
+    if (g.best > 0) {
+      _text(canvas, 'Best: ${g.best}', h * 0.024, Offset(w / 2, h * 0.75));
+    }
+  }
+
+  void _gameOver(Canvas canvas) {
+    final w = g.w, h = g.h;
+    final panel = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(w / 2, h * 0.42), width: w * 0.78, height: h * 0.36),
+      const Radius.circular(24),
+    );
+    canvas.drawRRect(panel, Paint()..color = const Color(0xEEFFF8E1));
+    canvas.drawRRect(
+        panel,
+        Paint()
+          ..color = const Color(0xFFE53935)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 5);
+    final c = panel.center;
+    _text(canvas, 'Crash!', h * 0.055, c + Offset(0, -h * 0.12), color: const Color(0xFFD32F2F));
+    _text(canvas, 'Score: ${g.score}', h * 0.032, c + Offset(0, -h * 0.05),
+        color: const Color(0xFF5D4037), shadow: false);
+    _text(canvas, '+${g.coins} coins  (total ${g.wallet})', h * 0.022, c + Offset(0, -h * 0.005),
+        color: const Color(0xFFFF8F00), shadow: false);
+    _text(canvas, g.newBest ? 'New best!' : 'Best: ${g.best}', h * 0.028,
+        c + Offset(0, h * 0.045),
+        color: g.newBest ? const Color(0xFF2E7D32) : const Color(0xFF5D4037),
+        shadow: false);
+    if (g.deadTimer > 0.8) {
+      _text(canvas, 'Tap to go to the garage', h * 0.022, c + Offset(0, h * 0.115),
+          color: const Color(0xFF1565C0), shadow: false);
+    }
+  }
+
+  void _arrow(Canvas canvas, Offset c, bool left) {
+    final r = g.h * 0.032;
+    canvas.drawCircle(c, r, Paint()..color = Colors.black45);
+    final s = left ? -1.0 : 1.0;
+    final path = Path()
+      ..moveTo(c.dx - s * r * 0.25, c.dy - r * 0.45)
+      ..lineTo(c.dx + s * r * 0.3, c.dy)
+      ..lineTo(c.dx - s * r * 0.25, c.dy + r * 0.45);
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = r * 0.22
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round);
+  }
+
+  void _coin(Canvas canvas, Offset o, double r) {
+    canvas.drawCircle(o, r, Paint()..color = const Color(0xFFFFA000));
+    canvas.drawCircle(o, r * 0.78, Paint()..color = const Color(0xFFFFD54F));
+    canvas.drawCircle(o + Offset(-r * 0.25, -r * 0.25), r * 0.18, Paint()..color = Colors.white70);
+  }
+
+  void _nitroIcon(Canvas canvas, Offset o, double r) {
+    final glow = 0.5 + 0.5 * sin(g.t * 8).abs();
+    canvas.drawCircle(o, r * 1.35, Paint()..color = const Color(0xFF00B0FF).withOpacity(0.25 * glow));
+    canvas.drawCircle(o, r, Paint()..color = const Color(0xFF0091EA));
+    canvas.drawCircle(o, r * 0.82, Paint()..color = const Color(0xFF40C4FF));
+    final bolt = Path()
+      ..moveTo(o.dx + r * 0.15, o.dy - r * 0.6)
+      ..lineTo(o.dx - r * 0.35, o.dy + r * 0.08)
+      ..lineTo(o.dx - r * 0.02, o.dy + r * 0.08)
+      ..lineTo(o.dx - r * 0.15, o.dy + r * 0.6)
+      ..lineTo(o.dx + r * 0.35, o.dy - r * 0.08)
+      ..lineTo(o.dx + r * 0.02, o.dy - r * 0.08)
+      ..close();
+    canvas.drawPath(bolt, Paint()..color = Colors.white);
+  }
+
+  void _flames(Canvas canvas) {
+    final cw = g.carW, ch = g.carH;
+    final baseY = g.playerY + ch * 0.48;
+    for (final sx in [-0.25, 0.25]) {
+      final x = g.playerX + sx * cw;
+      final len = ch * (0.35 + 0.15 * sin(g.t * 40 + sx * 10).abs());
+      final outer = Path()
+        ..moveTo(x - cw * 0.13, baseY)
+        ..lineTo(x, baseY + len)
+        ..lineTo(x + cw * 0.13, baseY)
+        ..close();
+      final inner = Path()
+        ..moveTo(x - cw * 0.07, baseY)
+        ..lineTo(x, baseY + len * 0.6)
+        ..lineTo(x + cw * 0.07, baseY)
+        ..close();
+      canvas.drawPath(outer, Paint()..color = const Color(0xFF00B0FF));
+      canvas.drawPath(inner, Paint()..color = const Color(0xFFE1F5FE));
+    }
+  }
+
+  void _car(Canvas c, Offset center, Color color, bool player,
+      {Color stripe = Colors.white, bool tiltOn = true}) {
     final cw = g.carW, ch = g.carH;
     c.save();
     c.translate(center.dx, center.dy);
-    if (player) c.rotate(g.tilt);
+    if (player && tiltOn) c.rotate(g.tilt);
 
     RRect rr(double x, double y, double ww, double hh, double r) =>
         RRect.fromRectAndRadius(
@@ -422,9 +785,9 @@ class GamePainter extends CustomPainter {
     }
     c.drawRRect(rr(0, 0, cw, ch, cw * 0.3), Paint()..color = color);
     if (player) {
-      final stripe = Paint()..color = Colors.white;
-      c.drawRect(Rect.fromLTWH(-cw * 0.14, -ch * 0.5, cw * 0.08, ch), stripe);
-      c.drawRect(Rect.fromLTWH(cw * 0.06, -ch * 0.5, cw * 0.08, ch), stripe);
+      final sp = Paint()..color = stripe;
+      c.drawRect(Rect.fromLTWH(-cw * 0.14, -ch * 0.5, cw * 0.08, ch), sp);
+      c.drawRect(Rect.fromLTWH(cw * 0.06, -ch * 0.5, cw * 0.08, ch), sp);
     }
     c.drawRRect(rr(0, -ch * 0.12, cw * 0.74, ch * 0.2, cw * 0.12),
         Paint()..color = const Color(0xFF263238));
