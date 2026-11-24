@@ -1,7 +1,7 @@
-name: gallery_app
-description: A simple phone gallery app (photos + videos, albums, zoom, share, delete).
+name: home_cam
+description: Home Cam - use a spare phone as a WiFi home camera.
 publish_to: 'none'
-version: 1.1.0+2
+version: 1.0.0+1
 
 environment:
   sdk: ^3.4.0
@@ -9,18 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  photo_manager: ^3.6.0
-  video_player: ^2.9.2
-  share_plus: ^10.1.4
-  just_audio: ^0.9.42
+  camera: ^0.11.0+2
+  image: ^4.3.0
+  webview_flutter: ^4.10.0
+  wakelock_plus: ^1.2.8
   shared_preferences: ^2.3.2
-  path_provider: ^2.1.4
-  crypto: ^3.0.5
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/
 
 dev_dependencies:
   flutter_launcher_icons: ^0.14.1
@@ -29,5 +25,5 @@ flutter_launcher_icons:
   android: true
   ios: false
   image_path: "assets/icon.png"
-  adaptive_icon_background: "#1E5EE8"
+  adaptive_icon_background: "#263238"
   adaptive_icon_foreground: "assets/icon_foreground.png"

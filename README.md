@@ -1,41 +1,20 @@
-# My Gallery – Flutter phone gallery app
+# Home Cam – use a spare phone as a WiFi home camera (Flutter)
 
-Features: albums, photo + video grid, full-screen swipe, pinch-zoom, video player, share, delete.
+Turn a spare Android phone into a home camera you watch from another phone on the same WiFi.
 
-## Build the APK (on a PC)
+- **Camera mode** (spare phone): shows a web address like `192.168.1.5:8080`. Keep it on this screen and plugged in.
+- **Viewer mode** (your phone): type that address and tap *Watch live*.
 
-1. Install Flutter: https://docs.flutter.dev/get-started/install (plus Android Studio for the Android SDK).
-2. Create the project:
-   ```
-   flutter create gallery_app
-   cd gallery_app
-   ```
-3. Replace `pubspec.yaml` and `lib/main.dart` with the files from this zip.
-4. Open `android/app/src/main/AndroidManifest.xml` and paste these lines
-   just **above** the `<application` tag:
-   ```xml
-   <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-   <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-       android:maxSdkVersion="32" />
-   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-       android:maxSdkVersion="29" />
-   ```
-   And add `android:requestLegacyExternalStorage="true"` inside the `<application ...>` tag.
-5. Copy the `assets` folder (app icon) into the project too, then run:
-   ```
-   flutter pub get
-   dart run flutter_launcher_icons
-   flutter build apk --release
-   ```
-6. Your APK is at `build/app/outputs/flutter-apk/app-release.apk`.
-   Copy it to your phone and install (allow "Install unknown apps").
+Any browser on the same WiFi can also open the address directly — no second app needed.
 
-## No PC?
+## Watching from outside the house
+This app streams only on your local WiFi. To watch while you are away, install **Tailscale** (free) on both phones and sign in with the same account; then use the camera phone's Tailscale IP in the viewer. No server or router setup needed.
 
-Upload the project to GitHub and build it for free with Codemagic
-(codemagic.io) — it gives you a downloadable APK.
+## Get the APK
+Built on GitHub and published here on every push:
+https://github.com/mdrafioffice-create/Gallery_app/releases/tag/home-cam-latest
 
-## Change the app name
+Open that page in Chrome on the phone, tap **HomeCam.apk**, then install.
 
-Edit `android:label="..."` in `AndroidManifest.xml`.
+## Note
+Live video must be tested on real phones; framerate is modest because the phone converts each frame itself. If the picture is sideways, laggy, or wrong-coloured, that is tunable — say what you see.
