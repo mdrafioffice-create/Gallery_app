@@ -56,12 +56,6 @@ jobs:
 
       - run: flutter pub get
 
-      - name: Show record versions
-        run: |
-          echo "----- record lock versions -----"
-          grep -A2 -E "^  record(_| |:)" pubspec.lock || true
-          echo "--------------------------------"
-
       - name: Generate app icon
         run: dart run flutter_launcher_icons
       - name: Use fixed signing key
@@ -71,7 +65,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: HomeCam-v1.1-apk
+          name: HomeCam-v1.2-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Publish APK as a release

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -167,6 +168,13 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _ready = false;
   bool _audioOn = false;
   bool _screenOff = false;
+  List<CameraDescription> _cameras = [];
+  CameraLensDirection _lens = CameraLensDirection.back;
+  ResolutionPreset _preset = ResolutionPreset.low;
+  bool _reinitializing = false;
+
+  bool get _hasFront =>
+      _cameras.any((c) => c.lensDirection == CameraLensDirection.front);
 
   @override
   void initState() {
@@ -176,19 +184,12 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _start() async {
     try {
-      final cams = await availableCameras();
-      if (cams.isEmpty) {
+      _cameras = await availableCameras();
+      if (_cameras.isEmpty) {
         setState(() => _status = 'No camera found on this phone.');
         return;
       }
-      final back = cams.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.back,
-          orElse: () => cams.first);
-      final c = CameraController(back, ResolutionPreset.low,
-          enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
-      await c.initialize();
-      await c.startImageStream(_onFrame);
-      _controller = c;
+      await _initController();
       await WakelockPlus.enable();
       await _startAudio();
       await _startServer();
@@ -200,6 +201,63 @@ class _CameraScreenState extends State<CameraScreen> {
     } catch (e) {
       if (mounted) setState(() => _status = 'Camera error: $e');
     }
+  }
+
+  Future<void> _initController() async {
+    final cam = _cameras.firstWhere((c) => c.lensDirection == _lens,
+        orElse: () => _cameras.first);
+    final c = CameraController(cam, _preset,
+        enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
+    await c.initialize();
+    await c.startImageStream(_onFrame);
+    _controller = c;
+  }
+
+  Future<void> _reinit() async {
+    if (_reinitializing) return;
+    _reinitializing = true;
+    setState(() => _ready = false);
+    try {
+      await _controller?.stopImageStream();
+    } catch (_) {}
+    await _controller?.dispose();
+    _controller = null;
+    try {
+      await _initController();
+      if (mounted) setState(() => _ready = true);
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Camera error: $e');
+    }
+    _reinitializing = false;
+  }
+
+  void _switchLens() {
+    if (!_hasFront) return;
+    _lens = _lens == CameraLensDirection.back
+        ? CameraLensDirection.front
+        : CameraLensDirection.back;
+    _reinit();
+  }
+
+  void _setPreset(ResolutionPreset p) {
+    if (p == _preset || _reinitializing) return;
+    _preset = p;
+    _reinit();
+  }
+
+  PopupMenuItem<ResolutionPreset> _qualityItem(
+      ResolutionPreset p, String label) {
+    return PopupMenuItem(
+      value: p,
+      child: Row(
+        children: [
+          Icon(p == _preset ? Icons.check : Icons.circle_outlined,
+              size: 18, color: p == _preset ? teal : Colors.black26),
+          const SizedBox(width: 10),
+          Text(label),
+        ],
+      ),
+    );
   }
 
   Future<void> _startAudio() async {
@@ -354,6 +412,24 @@ class _CameraScreenState extends State<CameraScreen> {
         title: const Text('Camera'),
         backgroundColor: teal,
         foregroundColor: Colors.white,
+        actions: [
+          if (_hasFront)
+            IconButton(
+              tooltip: 'Switch camera',
+              icon: const Icon(Icons.cameraswitch),
+              onPressed: _ready ? _switchLens : null,
+            ),
+          PopupMenuButton<ResolutionPreset>(
+            tooltip: 'Video quality',
+            icon: const Icon(Icons.high_quality),
+            onSelected: _setPreset,
+            itemBuilder: (_) => [
+              _qualityItem(ResolutionPreset.low, 'Low (smoothest)'),
+              _qualityItem(ResolutionPreset.medium, 'Medium'),
+              _qualityItem(ResolutionPreset.high, 'High (slower)'),
+            ],
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -484,14 +560,69 @@ class _ViewerScreenState extends State<ViewerScreen> {
   WebViewController? _web;
   bool _watching = false;
   bool _muted = false;
+  List<Map<String, String>> _saved = [];
 
   @override
   void initState() {
     super.initState();
     SharedPreferences.getInstance().then((p) {
       final last = p.getString('lastUrl');
-      if (last != null && mounted) setState(() => _ctrl.text = last);
+      final raw = p.getString('cameras');
+      if (!mounted) return;
+      setState(() {
+        if (last != null) _ctrl.text = last;
+        if (raw != null) {
+          _saved = (json.decode(raw) as List)
+              .map((e) => Map<String, String>.from(e as Map))
+              .toList();
+        }
+      });
     });
+  }
+
+  Future<void> _persistSaved() async {
+    final p = await SharedPreferences.getInstance();
+    p.setString('cameras', json.encode(_saved));
+  }
+
+  void _saveCurrent() {
+    final addr = _ctrl.text.trim();
+    if (addr.isEmpty) return;
+    final nameCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Save this camera'),
+        content: TextField(
+          controller: nameCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+              labelText: 'Name', hintText: 'e.g. Living room'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () {
+                final name =
+                    nameCtrl.text.trim().isEmpty ? addr : nameCtrl.text.trim();
+                setState(() {
+                  _saved.removeWhere((c) => c['addr'] == addr);
+                  _saved.add({'name': name, 'addr': addr});
+                });
+                _persistSaved();
+                Navigator.pop(context);
+              },
+              child: const Text('Save')),
+        ],
+      ),
+    );
+  }
+
+  void _deleteSaved(int i) {
+    setState(() => _saved.removeAt(i));
+    _persistSaved();
   }
 
   String _normalize(String raw) {
@@ -566,9 +697,9 @@ class _ViewerScreenState extends State<ViewerScreen> {
           ? WebViewWidget(controller: _web!)
           : Padding(
               padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+              child: ListView(
                 children: [
+                  const SizedBox(height: 24),
                   const Icon(Icons.cast_connected,
                       size: 64, color: Color(0xFF4FC3F7)),
                   const SizedBox(height: 20),
@@ -606,6 +737,47 @@ class _ViewerScreenState extends State<ViewerScreen> {
                     icon: const Icon(Icons.play_arrow),
                     label: const Text('Watch & listen'),
                   ),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _saveCurrent,
+                    icon: const Icon(Icons.bookmark_add_outlined,
+                        color: Colors.white70),
+                    label: const Text('Save this address',
+                        style: TextStyle(color: Colors.white70)),
+                  ),
+                  if (_saved.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('Saved cameras',
+                          style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                    const SizedBox(height: 6),
+                    ..._saved.asMap().entries.map((e) => Card(
+                          color: const Color(0xFF37474F),
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: ListTile(
+                            leading: const Icon(Icons.videocam,
+                                color: Color(0xFF4FC3F7)),
+                            title: Text(e.value['name'] ?? '',
+                                style: const TextStyle(color: Colors.white)),
+                            subtitle: Text(e.value['addr'] ?? '',
+                                style: const TextStyle(color: Colors.white54)),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline,
+                                  color: Colors.white38),
+                              onPressed: () => _deleteSaved(e.key),
+                            ),
+                            onTap: () {
+                              _ctrl.text = e.value['addr'] ?? '';
+                              _connect();
+                            },
+                          ),
+                        )),
+                  ],
                   const SizedBox(height: 14),
                   const Text('Tap the speaker icon up top to mute the sound.',
                       textAlign: TextAlign.center,
