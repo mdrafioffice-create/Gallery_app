@@ -284,7 +284,8 @@ class _CameraScreenState extends State<CameraScreen> {
     _processing = true;
     _lastMs = now;
     try {
-      _latestJpeg = _yuvToJpeg(image);
+      _latestJpeg =
+          _yuvToJpeg(image, _lens == CameraLensDirection.front);
     } catch (_) {
     } finally {
       _processing = false;
@@ -840,7 +841,7 @@ Future<String> _lanIp() async {
 }
 
 /// Convert a YUV420 camera frame to JPEG bytes.
-Uint8List? _yuvToJpeg(CameraImage image) {
+Uint8List? _yuvToJpeg(CameraImage image, bool front) {
   final width = image.width;
   final height = image.height;
   if (image.planes.length < 3) return null;
@@ -870,6 +871,8 @@ Uint8List? _yuvToJpeg(CameraImage image) {
       out.setPixelRgb(x, y, r.clamp(0, 255), g.clamp(0, 255), b.clamp(0, 255));
     }
   }
-  final rotated = img.copyRotate(out, angle: 90);
+  var rotated = img.copyRotate(out, angle: 90);
+  // Front cameras deliver a mirrored image; flip it so it reads normally.
+  if (front) rotated = img.flipHorizontal(rotated);
   return Uint8List.fromList(img.encodeJpg(rotated, quality: 70));
 }

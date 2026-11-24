@@ -1,7 +1,7 @@
 name: home_cam
 description: Home Cam - use a spare phone as a WiFi home camera.
 publish_to: 'none'
-version: 1.2.0+3
+version: 1.2.1+4
 
 environment:
   sdk: ^3.4.0
