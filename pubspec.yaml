@@ -13,7 +13,8 @@ dependencies:
   image: ^4.3.0
   webview_flutter: ^4.10.0
   webview_flutter_android: ^4.3.0
-  record: ^5.2.1
+  mic_stream: ^0.7.2
+  permission_handler: ^11.3.1
   wakelock_plus: ^1.2.8
   shared_preferences: ^2.3.2
 

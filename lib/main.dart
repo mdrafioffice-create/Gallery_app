@@ -6,7 +6,8 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
-import 'package:record/record.dart';
+import 'package:mic_stream/mic_stream.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -154,8 +155,9 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
   HttpServer? _server;
-  final AudioRecorder _rec = AudioRecorder();
+  StreamSubscription? _micSub;
   StreamController<Uint8List>? _audioHub;
+  int _audioRate = 44100;
   Uint8List? _latestJpeg;
   bool _processing = false;
   int _lastMs = 0;
@@ -202,14 +204,18 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _startAudio() async {
     try {
-      if (!await _rec.hasPermission()) return;
-      final stream = await _rec.startStream(const RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        numChannels: 1,
-      ));
+      final status = await Permission.microphone.request();
+      if (!status.isGranted) return;
+      final Stream<Uint8List>? stream = await MicStream.microphone(
+        audioSource: AudioSource.DEFAULT,
+        sampleRate: 44100,
+        channelConfig: ChannelConfig.CHANNEL_IN_MONO,
+        audioFormat: AudioFormat.ENCODING_PCM_16BIT,
+      );
+      if (stream == null) return;
       final hub = StreamController<Uint8List>.broadcast();
-      stream.listen((d) => hub.add(d), onError: (_) {});
+      _micSub = stream.listen((d) => hub.add(Uint8List.fromList(d)),
+          onError: (_) {});
       _audioHub = hub;
       _audioOn = true;
     } catch (_) {
@@ -267,7 +273,7 @@ class _CameraScreenState extends State<CameraScreen> {
         res.headers.set('Content-Type', 'audio/wav');
         res.headers.set('Cache-Control', 'no-cache');
         res.headers.set('Connection', 'close');
-        res.add(_wavHeader(16000, 1, 16));
+        res.add(_wavHeader(_audioRate, 1, 16));
         await res.flush();
         final hub = _audioHub;
         if (hub == null) {
@@ -312,7 +318,7 @@ class _CameraScreenState extends State<CameraScreen> {
     WakelockPlus.disable();
     _controller?.stopImageStream().catchError((_) {});
     _controller?.dispose();
-    _rec.stop().catchError((_) => null);
+    _micSub?.cancel();
     _audioHub?.close();
     _server?.close(force: true);
     super.dispose();
