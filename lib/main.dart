@@ -6,8 +6,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
-import 'package:mic_stream/mic_stream.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -155,9 +154,10 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
   HttpServer? _server;
+  final AudioRecorder _rec = AudioRecorder();
   StreamSubscription? _micSub;
   StreamController<Uint8List>? _audioHub;
-  int _audioRate = 44100;
+  final int _audioRate = 16000;
   Uint8List? _latestJpeg;
   bool _processing = false;
   int _lastMs = 0;
@@ -204,15 +204,12 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _startAudio() async {
     try {
-      final status = await Permission.microphone.request();
-      if (!status.isGranted) return;
-      final Stream<Uint8List>? stream = await MicStream.microphone(
-        audioSource: AudioSource.DEFAULT,
-        sampleRate: 44100,
-        channelConfig: ChannelConfig.CHANNEL_IN_MONO,
-        audioFormat: AudioFormat.ENCODING_PCM_16BIT,
-      );
-      if (stream == null) return;
+      if (!await _rec.hasPermission()) return;
+      final stream = await _rec.startStream(RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: _audioRate,
+        numChannels: 1,
+      ));
       final hub = StreamController<Uint8List>.broadcast();
       _micSub = stream.listen((d) => hub.add(Uint8List.fromList(d)),
           onError: (_) {});
@@ -319,6 +316,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _controller?.stopImageStream().catchError((_) {});
     _controller?.dispose();
     _micSub?.cancel();
+    _rec.stop().catchError((_) => null);
     _audioHub?.close();
     _server?.close(force: true);
     super.dispose();

@@ -56,49 +56,11 @@ jobs:
 
       - run: flutter pub get
 
-      - name: Modernize mic_stream build file
+      - name: Show record versions
         run: |
-          python3 - <<'PY'
-          import glob, re, os
-          dirs = glob.glob(os.path.expanduser("~/.pub-cache/hosted/pub.dev/mic_stream-*/android"))
-          if not dirs:
-              print("mic_stream not found; skipping"); raise SystemExit(0)
-          d = dirs[0]
-          ns = "com.whatsub.mic_stream"
-          man = os.path.join(d, "src/main/AndroidManifest.xml")
-          if os.path.exists(man):
-              t = open(man).read()
-              m = re.search(r'package="([^"]+)"', t)
-              if m:
-                  ns = m.group(1)
-              t = re.sub(r'\s*package="[^"]+"', '', t, count=1)
-              open(man, "w").write(t)
-          kotlin = os.path.isdir(os.path.join(d, "src/main/kotlin"))
-          srcdir = "src/main/kotlin" if kotlin else "src/main/java"
-          gradle = f"""group '{ns}'
-          version '1.0'
-
-          apply plugin: 'com.android.library'
-          apply plugin: 'kotlin-android'
-
-          android {{
-              namespace '{ns}'
-              compileSdk 34
-              defaultConfig {{ minSdkVersion 21 }}
-              compileOptions {{
-                  sourceCompatibility JavaVersion.VERSION_1_8
-                  targetCompatibility JavaVersion.VERSION_1_8
-              }}
-              kotlinOptions {{ jvmTarget = '1.8' }}
-              sourceSets {{ main.java.srcDirs += '{srcdir}' }}
-          }}
-          """
-          # strip the common leading indentation introduced by the heredoc
-          gradle = "\n".join(line[10:] if line.startswith(" " * 10) else line
-                             for line in gradle.splitlines()) + "\n"
-          open(os.path.join(d, "build.gradle"), "w").write(gradle)
-          print("Patched mic_stream, namespace =", ns, "srcdir =", srcdir)
-          PY
+          echo "----- record lock versions -----"
+          grep -A2 -E "^  record(_| |:)" pubspec.lock || true
+          echo "--------------------------------"
 
       - name: Generate app icon
         run: dart run flutter_launcher_icons
