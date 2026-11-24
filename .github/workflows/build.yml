@@ -36,6 +36,7 @@ jobs:
               '    <uses-permission android:name="android.permission.CAMERA"/>\n'
               '    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n'
               '    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>\n'
+              '    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n'
               '    <application'
           )
           if "permission.CAMERA" not in s:
@@ -63,7 +64,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: HomeCam-v1.0-apk
+          name: HomeCam-v1.1-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Publish APK as a release

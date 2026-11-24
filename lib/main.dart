@@ -6,9 +6,11 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 const int kPort = 8080;
 const teal = Color(0xFF00897B);
@@ -83,12 +85,13 @@ class HomePage extends StatelessWidget {
                 Icons.smartphone,
                 const Color(0xFF1565C0),
                 'Use as viewer',
-                'Watch the camera live from this phone, on the same WiFi.',
+                'Watch and listen to the camera live from this phone.',
                 () => Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const ViewerScreen())),
               ),
               const Spacer(),
-              const Text('Both phones must be on the same WiFi.',
+              const Text('Same WiFi, or link both phones with Tailscale.',
+                  textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white38, fontSize: 13)),
               const SizedBox(height: 8),
             ],
@@ -151,6 +154,8 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
   HttpServer? _server;
+  final AudioRecorder _rec = AudioRecorder();
+  StreamController<Uint8List>? _audioHub;
   Uint8List? _latestJpeg;
   bool _processing = false;
   int _lastMs = 0;
@@ -158,6 +163,8 @@ class _CameraScreenState extends State<CameraScreen> {
   String _url = '';
   int _viewers = 0;
   bool _ready = false;
+  bool _audioOn = false;
+  bool _screenOff = false;
 
   @override
   void initState() {
@@ -181,6 +188,7 @@ class _CameraScreenState extends State<CameraScreen> {
       await c.startImageStream(_onFrame);
       _controller = c;
       await WakelockPlus.enable();
+      await _startAudio();
       await _startServer();
       if (!mounted) return;
       setState(() {
@@ -189,6 +197,23 @@ class _CameraScreenState extends State<CameraScreen> {
       });
     } catch (e) {
       if (mounted) setState(() => _status = 'Camera error: $e');
+    }
+  }
+
+  Future<void> _startAudio() async {
+    try {
+      if (!await _rec.hasPermission()) return;
+      final stream = await _rec.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: 16000,
+        numChannels: 1,
+      ));
+      final hub = StreamController<Uint8List>.broadcast();
+      stream.listen((d) => hub.add(d), onError: (_) {});
+      _audioHub = hub;
+      _audioOn = true;
+    } catch (_) {
+      _audioOn = false;
     }
   }
 
@@ -217,7 +242,6 @@ class _CameraScreenState extends State<CameraScreen> {
     final path = req.uri.path;
     try {
       if (path == '/video') {
-        res.headers.contentType = null;
         res.headers.set('Content-Type',
             'multipart/x-mixed-replace; boundary=frame');
         res.headers.set('Cache-Control', 'no-cache');
@@ -227,7 +251,7 @@ class _CameraScreenState extends State<CameraScreen> {
           while (true) {
             final jpg = _latestJpeg;
             if (jpg != null) {
-              res.add(ascii.encode(
+              res.add(_ascii(
                   '--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\n\r\n'));
               res.add(jpg);
               res.add(const [13, 10]);
@@ -236,10 +260,26 @@ class _CameraScreenState extends State<CameraScreen> {
             await Future.delayed(const Duration(milliseconds: 120));
           }
         } catch (_) {
-          // client disconnected
         } finally {
           if (mounted) setState(() => _viewers = (_viewers - 1).clamp(0, 999));
         }
+      } else if (path == '/audio') {
+        res.headers.set('Content-Type', 'audio/wav');
+        res.headers.set('Cache-Control', 'no-cache');
+        res.headers.set('Connection', 'close');
+        res.add(_wavHeader(16000, 1, 16));
+        await res.flush();
+        final hub = _audioHub;
+        if (hub == null) {
+          await res.close();
+          return;
+        }
+        try {
+          await for (final chunk in hub.stream) {
+            res.add(chunk);
+            await res.flush();
+          }
+        } catch (_) {}
       } else if (path == '/photo') {
         final jpg = _latestJpeg;
         if (jpg == null) {
@@ -255,7 +295,9 @@ class _CameraScreenState extends State<CameraScreen> {
             '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Home Cam</title><style>html,body{margin:0;background:#000;height:100%}'
             'img{width:100%;height:auto;display:block}</style></head>'
-            '<body><img src="/video"></body></html>');
+            '<body><img src="/video">'
+            '<audio id="a" src="/audio" autoplay playsinline></audio>'
+            '</body></html>');
         await res.close();
       }
     } catch (_) {
@@ -267,15 +309,41 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     _controller?.stopImageStream().catchError((_) {});
     _controller?.dispose();
+    _rec.stop().catchError((_) => null);
+    _audioHub?.close();
     _server?.close(force: true);
-    WakelockPlus.disable();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_screenOff) {
+      return GestureDetector(
+        onTap: () => setState(() => _screenOff = false),
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.nightlight_round,
+                    color: Colors.white.withOpacity(0.08), size: 40),
+                const SizedBox(height: 14),
+                Text('Streaming — screen off',
+                    style: TextStyle(color: Colors.white.withOpacity(0.12))),
+                const SizedBox(height: 4),
+                Text('Tap to wake',
+                    style: TextStyle(
+                        color: Colors.white.withOpacity(0.10), fontSize: 12)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -328,6 +396,10 @@ class _CameraScreenState extends State<CameraScreen> {
                             color: Colors.white,
                             fontWeight: FontWeight.bold,
                             letterSpacing: 1)),
+                    const SizedBox(width: 10),
+                    Icon(_audioOn ? Icons.mic : Icons.mic_off,
+                        size: 16,
+                        color: _audioOn ? const Color(0xFF66BB6A) : Colors.orange),
                     const Spacer(),
                     if (_ready)
                       Text('$_viewers watching',
@@ -367,10 +439,24 @@ class _CameraScreenState extends State<CameraScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  const Text(
-                      'Keep this phone on this screen and plugged in. Any browser on the same WiFi can open that address too.',
-                      style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF455A64)),
+                      onPressed: () => setState(() => _screenOff = true),
+                      icon: const Icon(Icons.dark_mode),
+                      label: const Text('Screen off (keep streaming)'),
+                    ),
+                  ),
+                  if (!_audioOn)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 10),
+                      child: Text(
+                          'Microphone is off — allow the mic permission to send sound.',
+                          style: TextStyle(color: Colors.orange, fontSize: 12)),
+                    ),
                 ],
               ],
             ),
@@ -393,6 +479,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
   final _ctrl = TextEditingController();
   WebViewController? _web;
   bool _watching = false;
+  bool _muted = false;
 
   @override
   void initState() {
@@ -423,10 +510,22 @@ class _ViewerScreenState extends State<ViewerScreen> {
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.black)
       ..loadRequest(Uri.parse(url));
+    // Allow the audio to start without a manual tap.
+    if (web.platform is AndroidWebViewController) {
+      (web.platform as AndroidWebViewController)
+          .setMediaPlaybackRequiresUserGesture(false);
+    }
     setState(() {
       _web = web;
       _watching = true;
+      _muted = false;
     });
+  }
+
+  void _toggleMute() {
+    setState(() => _muted = !_muted);
+    _web?.runJavaScript(
+        "document.querySelectorAll('audio').forEach(function(a){a.muted=$_muted;});");
   }
 
   @override
@@ -438,6 +537,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
         backgroundColor: teal,
         foregroundColor: Colors.white,
         actions: [
+          if (_watching)
+            IconButton(
+              tooltip: _muted ? 'Listen' : 'Mute',
+              icon: Icon(_muted ? Icons.volume_off : Icons.volume_up),
+              onPressed: _toggleMute,
+            ),
           if (_watching)
             IconButton(
               icon: const Icon(Icons.refresh),
@@ -495,8 +600,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
                   FilledButton.icon(
                     onPressed: _connect,
                     icon: const Icon(Icons.play_arrow),
-                    label: const Text('Watch live'),
+                    label: const Text('Watch & listen'),
                   ),
+                  const SizedBox(height: 14),
+                  const Text('Tap the speaker icon up top to mute the sound.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white38, fontSize: 12)),
                 ],
               ),
             ),
@@ -506,11 +615,35 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
 // ------------------------------------------------------------- helpers
 
+List<int> _ascii(String s) => s.codeUnits;
+
+Uint8List _wavHeader(int sampleRate, int channels, int bits) {
+  final byteRate = sampleRate * channels * bits ~/ 8;
+  final blockAlign = channels * bits ~/ 8;
+  final b = BytesBuilder();
+  void u32(int v) =>
+      b.add([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]);
+  void u16(int v) => b.add([v & 0xFF, (v >> 8) & 0xFF]);
+  b.add(_ascii('RIFF'));
+  u32(0xFFFFFFFF);
+  b.add(_ascii('WAVE'));
+  b.add(_ascii('fmt '));
+  u32(16);
+  u16(1); // PCM
+  u16(channels);
+  u32(sampleRate);
+  u32(byteRate);
+  u16(blockAlign);
+  u16(bits);
+  b.add(_ascii('data'));
+  u32(0xFFFFFFFF);
+  return b.toBytes();
+}
+
 Future<String> _lanIp() async {
   try {
     final interfaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4, includeLoopback: false);
-    // Prefer a private 192.168.x / 10.x / 172.x address (the WiFi LAN).
     for (final i in interfaces) {
       for (final a in i.addresses) {
         final ip = a.address;
@@ -561,14 +694,6 @@ Uint8List? _yuvToJpeg(CameraImage image) {
       out.setPixelRgb(x, y, r.clamp(0, 255), g.clamp(0, 255), b.clamp(0, 255));
     }
   }
-  // Camera frames are landscape; rotate so the view is upright.
   final rotated = img.copyRotate(out, angle: 90);
   return Uint8List.fromList(img.encodeJpg(rotated, quality: 70));
-}
-
-const ascii = _Ascii();
-
-class _Ascii {
-  const _Ascii();
-  List<int> encode(String s) => s.codeUnits;
 }
