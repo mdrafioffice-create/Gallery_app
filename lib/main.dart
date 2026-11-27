@@ -795,9 +795,9 @@ class RacePainter extends CustomPainter {
       final on = g.control.index == i;
       canvas.drawRRect(
           RRect.fromRectAndRadius(r, const Radius.circular(10)),
-          Paint()..color = on ? const Color(0xFF1565C0) : Colors.white24);
+          Paint()..color = on ? const Color(0xFF1565C0) : const Color(0xFF455A64));
       _text(canvas, labels[i], h * 0.02, r.center,
-          color: Colors.white, shadow: false);
+          color: on ? Colors.white : Colors.white70, shadow: false);
     }
     _text(canvas, g.best > 0 ? 'Best: ${g.best}' : 'Tap left/right • swipe • or tilt to steer',
         h * 0.02, Offset(w / 2, h * 0.86), color: Colors.white70);
